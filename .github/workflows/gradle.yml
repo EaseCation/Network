@@ -25,6 +25,8 @@ jobs:
         with:
           java-version: ${{ matrix.java }}
           distribution: temurin
-          cache: maven
-      - name: Build with Maven
-        run: mvn -B clean package
+          cache: gradle
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Build with Gradle
+        run: gradle build
