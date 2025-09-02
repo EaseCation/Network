@@ -10,4 +10,4 @@ netty-buffer = { module = "io.netty:netty-buffer", version.ref = "netty" }
 netty-epoll = { module = "io.netty:netty-transport-native-epoll", version.ref = "netty" }
 netty-handler = { module = "io.netty:netty-handler", version.ref = "netty" }
 netty-kqueue = { module = "io.netty:netty-transport-native-kqueue", version.ref = "netty" }
-spotbugs-annotations = { module = "com.github.spotbugs:spotbugs-annotations", version = "4.9.3" }
+spotbugs-annotations = { module = "com.github.spotbugs:spotbugs-annotations", version = "4.9.4" }
