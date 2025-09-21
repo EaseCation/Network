@@ -14,5 +14,6 @@ updates:
       interval: "quarterly"
     open-pull-requests-limit: 20
     ignore:
+      - dependency-name: "com.google.code.findbugs:jsr305"
       - dependency-name: "io.netty:*"
         versions: [">=4.2.0"]
