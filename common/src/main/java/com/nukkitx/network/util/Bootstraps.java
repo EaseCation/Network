@@ -34,6 +34,10 @@ public final class Bootstraps {
             if (index > -1) {
                 kernelVersion = kernelVersion.substring(0, index);
             }
+            int idx = kernelVersion.indexOf('+');
+            if (idx > -1) {
+                kernelVersion = kernelVersion.substring(0, idx);
+            }
             int[] kernelVer = fromString(kernelVersion);
             KERNEL_VERSION = Optional.of(kernelVer);
             REUSEPORT_AVAILABLE = checkVersion(kernelVer, 0);
