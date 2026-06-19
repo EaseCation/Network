@@ -4,7 +4,7 @@ netty = "4.2.15.Final"
 [libraries]
 expiringmap = { module = "net.jodah:expiringmap", version = "0.5.11" }
 javax-annotations = { module = "com.google.code.findbugs:jsr305", version = "3.0.2" }
-lombok = { module = "org.projectlombok:lombok", version = "1.18.42" }
+lombok = { module = "org.projectlombok:lombok", version = "1.18.46" }
 netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
 netty-buffer = { module = "io.netty:netty-buffer", version.ref = "netty" }
 netty-epoll = { module = "io.netty:netty-transport-native-epoll", version.ref = "netty" }
