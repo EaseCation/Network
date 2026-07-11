@@ -1,5 +1,5 @@
 [versions]
-netty = "4.2.15.Final"
+netty = "4.2.16.Final"
 
 [libraries]
 expiringmap = { module = "net.jodah:expiringmap", version = "0.5.11" }
