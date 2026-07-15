@@ -6,6 +6,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoop;
 
+import javax.annotation.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ScheduledFuture;
@@ -16,7 +17,9 @@ import static com.nukkitx.network.raknet.RakNetConstants.*;
 @ParametersAreNonnullByDefault
 public class RakNetServerSession extends RakNetSession {
     private final RakNetServer rakNet;
+    @Nullable
     private ScheduledFuture<?> tickFuture;
+    private final Object tickFutureLock = new Object();
 
     RakNetServerSession(RakNetServer rakNet, InetSocketAddress remoteAddress, Channel channel, EventLoop eventLoop, int mtu,
                         int protocolVersion) {
@@ -43,8 +46,12 @@ public class RakNetServerSession extends RakNetSession {
 
     @Override
     protected void onClose() {
-        if (this.tickFuture != null) {
-            this.tickFuture.cancel(false);
+        synchronized (this.tickFutureLock) {
+            ScheduledFuture<?> tickFuture = this.tickFuture;
+            if (tickFuture != null) {
+                tickFuture.cancel(false);
+                this.tickFuture = null;
+            }
         }
         if (!this.rakNet.sessionsByAddress.remove(this.address, this)) {
             throw new IllegalStateException("Session was not found in session map");
@@ -88,6 +95,10 @@ public class RakNetServerSession extends RakNetSession {
     }
 
     private void onConnectionRequest(ByteBuf buffer) {
+        if (this.getState() != RakNetState.INITIALIZED) {
+            return;
+        }
+
         long guid = buffer.readLong();
         long time = buffer.readLong();
         boolean security = buffer.readBoolean();
@@ -112,7 +123,15 @@ public class RakNetServerSession extends RakNetSession {
     }
 
     void sendOpenConnectionReply1() {
-        this.tickFuture = this.eventLoop.scheduleAtFixedRate(this::onTick, 0, 10, TimeUnit.MILLISECONDS);
+        synchronized (this.tickFutureLock) {
+            if (this.isClosed()) {
+                return;
+            }
+            ScheduledFuture<?> tickFuture = this.tickFuture;
+            if (tickFuture == null) {
+                this.tickFuture = this.eventLoop.scheduleAtFixedRate(this::onTick, 0, 10, TimeUnit.MILLISECONDS);
+            }
+        }
 
         ByteBuf buffer = this.allocateBuffer(28);
 
