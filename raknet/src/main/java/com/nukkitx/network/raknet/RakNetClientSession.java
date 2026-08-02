@@ -26,33 +26,56 @@ public class RakNetClientSession extends RakNetSession {
 
     @Override
     protected void onPacket(ByteBuf buffer) {
+        if (!buffer.isReadable()) {
+            return;
+        }
+
         int packetId = buffer.readUnsignedByte();
 
+        boolean handled = false;
         switch (packetId) {
             case ID_OPEN_CONNECTION_REPLY_1:
-                this.onOpenConnectionReply1(buffer);
+                handled = this.onOpenConnectionReply1(buffer);
                 break;
             case ID_OPEN_CONNECTION_REPLY_2:
-                this.onOpenConnectionReply2(buffer);
+                handled = this.onOpenConnectionReply2(buffer);
                 break;
             case ID_CONNECTION_REQUEST_ACCEPTED:
-                this.onConnectionRequestAccepted(buffer);
+                handled = this.onConnectionRequestAccepted(buffer);
                 break;
             case ID_CONNECTION_REQUEST_FAILED:
-                this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+                if (this.getState() == RakNetState.INITIALIZED && this.isValidOfflineFailure(buffer, false, true)) {
+                    this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+                }
                 break;
             case ID_INCOMPATIBLE_PROTOCOL_VERSION:
-                this.close(DisconnectReason.INCOMPATIBLE_PROTOCOL_VERSION);
+                if (this.getState() == RakNetState.UNCONNECTED && this.isValidOfflineFailure(buffer, true, false)) {
+                    this.close(DisconnectReason.INCOMPATIBLE_PROTOCOL_VERSION);
+                }
                 break;
             case ID_ALREADY_CONNECTED:
-                this.close(DisconnectReason.ALREADY_CONNECTED);
+                if (this.isOfflineHandshakeInProgress() && this.isValidOfflineFailure(buffer, false, false)) {
+                    this.close(DisconnectReason.ALREADY_CONNECTED);
+                }
                 break;
             case ID_NO_FREE_INCOMING_CONNECTIONS:
-                this.close(DisconnectReason.NO_FREE_INCOMING_CONNECTIONS);
+                if (this.isOfflineHandshakeInProgress() && this.isValidOfflineFailure(buffer, false, false)) {
+                    this.close(DisconnectReason.NO_FREE_INCOMING_CONNECTIONS);
+                }
                 break;
             case ID_IP_RECENTLY_CONNECTED:
-                this.close(DisconnectReason.IP_RECENTLY_CONNECTED);
+                if (this.isOfflineHandshakeInProgress() && this.isValidOfflineFailure(buffer, false, false)) {
+                    this.close(DisconnectReason.IP_RECENTLY_CONNECTED);
+                }
                 break;
+            case ID_CONNECTION_BANNED:
+                if (this.isOfflineHandshakeInProgress() && this.isValidOfflineFailure(buffer, false, false)) {
+                    this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+                }
+                break;
+        }
+        if (handled) {
+            this.touch();
         }
     }
 
@@ -66,8 +89,11 @@ public class RakNetClientSession extends RakNetSession {
                     this.attemptConnection(curTime);
                 }
             }
+        } else if (this.getState() == RakNetState.INITIALIZING && this.nextConnectionAttempt < curTime) {
+            this.sendOpenConnectionRequest2();
+            this.nextConnectionAttempt = curTime + 1000;
         }
-        
+
         super.tick(curTime);
     }
 
@@ -89,71 +115,116 @@ public class RakNetClientSession extends RakNetSession {
         return this.rakNet;
     }
 
-    private void onOpenConnectionReply1(ByteBuf buffer) {
+    private boolean onOpenConnectionReply1(ByteBuf buffer) {
         if (this.getState() != RakNetState.UNCONNECTED) {
-            return;
+            return false;
         }
         if (!RakNetUtils.verifyUnconnectedMagic(buffer)) {
-            return;
+            return false;
         }
-        this.guid = buffer.readLong();
+        if (!buffer.isReadable(Long.BYTES + 1 + Short.BYTES)) {
+            return false;
+        }
+
+        long guid = buffer.readLong();
         boolean security = buffer.readBoolean();
         int mtu = buffer.readUnsignedShort();
-        this.setMtu(mtu);
 
         if (security) {
             this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
-            return;
+            return false;
+        }
+        if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
+            return false;
         }
 
+        this.guid = guid;
+        this.setMtu(mtu);
         this.setState(RakNetState.INITIALIZING);
 
         this.sendOpenConnectionRequest2();
+        this.nextConnectionAttempt = System.currentTimeMillis() + 1000;
+        return true;
     }
 
-    private void onOpenConnectionReply2(ByteBuf buffer) {
+    private boolean onOpenConnectionReply2(ByteBuf buffer) {
         if (this.getState() != RakNetState.INITIALIZING) {
-            return;
+            return false;
         }
         if (!RakNetUtils.verifyUnconnectedMagic(buffer)) {
-            this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
-            return;
+            return false;
         }
+        if (!buffer.isReadable(Long.BYTES)) {
+            return false;
+        }
+
+        int fieldsIndex = buffer.readerIndex();
+        buffer.skipBytes(Long.BYTES);
+        if (!NetworkUtils.skipAddress(buffer) || !buffer.isReadable(Short.BYTES + 1)) {
+            return false;
+        }
+        buffer.readerIndex(fieldsIndex);
 
         long guid = buffer.readLong();
         if (this.guid != guid) {
             this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
-            return;
+            return false;
         }
-        InetSocketAddress address = NetworkUtils.readAddress(buffer);
+        NetworkUtils.skipAddress(buffer);
         int mtu = buffer.readUnsignedShort();
-        this.setMtu(mtu);
         boolean security = buffer.readBoolean();
+        if (security) {
+            this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+            return false;
+        }
+        if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
+            return false;
+        }
 
+        this.setMtu(mtu);
         this.initialize();
         this.setState(RakNetState.INITIALIZED);
 
         this.sendConnectionRequest();
+        return true;
     }
 
-    private void onConnectionRequestAccepted(ByteBuf buffer) {
-        NetworkUtils.readAddress(buffer); // our address
-        buffer.readUnsignedShort(); // system index
-        final int required = IPV4_MESSAGE_SIZE + 16; // Address + 2 * Long - Minimum amount of data
-        long pongTime = 0;
-        try {
-            while (buffer.isReadable(required)) {
-                NetworkUtils.readAddress(buffer);
-            }
-            pongTime = buffer.readLong();
-            buffer.readLong();
-        } catch (IndexOutOfBoundsException ignored) {
-            // Hive sends malformed IPv6 address
+    private boolean onConnectionRequestAccepted(ByteBuf buffer) {
+        if (this.getState() != RakNetState.INITIALIZED) {
+            return false;
         }
+        if (!NetworkUtils.skipAddress(buffer) || !buffer.isReadable(Short.BYTES + Long.BYTES * 2)) {
+            return false;
+        }
+        buffer.skipBytes(Short.BYTES);
+
+        long pongTime = buffer.getLong(buffer.writerIndex() - Long.BYTES * 2);
+        // Hive sends malformed IPv6 address
 
         this.sendNewIncomingConnection(pongTime);
 
         this.setState(RakNetState.CONNECTED);
+        return true;
+    }
+
+    private boolean isOfflineHandshakeInProgress() {
+        RakNetState state = this.getState();
+        return state == RakNetState.UNCONNECTED || state == RakNetState.INITIALIZING;
+    }
+
+    private boolean isValidOfflineFailure(ByteBuf buffer, boolean includesProtocolVersion, boolean requireGuid) {
+        int expectedLength = (includesProtocolVersion ? Byte.BYTES : 0) + 16 + Long.BYTES;
+        if (buffer.readableBytes() != expectedLength) {
+            return false;
+        }
+        if (includesProtocolVersion) {
+            buffer.skipBytes(Byte.BYTES);
+        }
+        if (!RakNetUtils.verifyUnconnectedMagic(buffer)) {
+            return false;
+        }
+        long serverGuid = buffer.readLong();
+        return !requireGuid || serverGuid == this.guid;
     }
 
     private void sendOpenConnectionRequest1(int mtuSize) {

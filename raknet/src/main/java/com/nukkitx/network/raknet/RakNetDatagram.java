@@ -47,13 +47,23 @@ public class RakNetDatagram extends AbstractReferenceCounted {
     }
 
     void decode(ByteBuf buf) {
+        if (buf.readableBytes() < RAKNET_DATAGRAM_HEADER_SIZE) {
+            isValid = false;
+            return;
+        }
+
         byte flags = buf.readByte();
         isValid = (flags & FLAG_VALID) != 0;
         isContinuousSend = (flags & FLAG_CONTINUOUS_SEND) != 0;
         sequenceIndex = buf.readUnsignedMediumLE();
+        int decodedPacketStart = packets.size();
         while (buf.isReadable()) {
             EncapsulatedPacket packet = new EncapsulatedPacket();
-            packet.decode(buf);
+            if (!packet.decode(buf)) {
+                packets.subList(decodedPacketStart, packets.size()).clear();
+                isValid = false;
+                return;
+            }
             packets.add(packet);
         }
     }

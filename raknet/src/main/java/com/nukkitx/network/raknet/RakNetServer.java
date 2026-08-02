@@ -10,6 +10,8 @@ import io.netty.channel.*;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import it.unimi.dsi.fastutil.objects.Object2IntMap;
+import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.jodah.expiringmap.ExpirationPolicy;
 import net.jodah.expiringmap.ExpiringMap;
 
@@ -24,33 +26,44 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
 
 import static com.nukkitx.network.raknet.RakNetConstants.*;
 
 @ParametersAreNonnullByDefault
 public class RakNetServer extends RakNet {
     private static final InternalLogger log = InternalLoggerFactory.getInstance(RakNetServer.class);
+    private static final int MAXIMUM_PROXIED_ADDRESS_COUNT = 65536;
+    private static final int SESSION_CREATION_LOCK_COUNT = 256;
 
     private final ConcurrentMap<InetAddress, Long> blockAddresses = new ConcurrentHashMap<>();
     final ConcurrentMap<InetSocketAddress, RakNetServerSession> sessionsByAddress = new ConcurrentHashMap<>();
     final ExpiringMap<InetSocketAddress, InetSocketAddress> proxiedAddresses;
+    private final Object sessionAdmissionLock = new Object();
+    private final Object sessionQuotaLock = new Object();
+    private final Object[] sessionCreationLocks = new Object[SESSION_CREATION_LOCK_COUNT];
+    private final Object2IntMap<InetAddress> sessionCountsByAddress = new Object2IntOpenHashMap<>();
 
     private final InetSocketAddress bindAddress;
     private final int bindThreads;
     private final boolean useProxyProtocol;
     private int maxConnections = 1024;
+    private int maxConnectionsPerIp = 64;
+    private int reservedSessionCount;
+    private int pendingSessionCount;
+    private int maxPendingSessions = 1024;
 
-    private final Set<Channel> channels = new HashSet<>();
+    private final Set<Channel> channels = ConcurrentHashMap.newKeySet();
     private final Iterator<Channel> channelIterator = new RoundRobinIterator<>(channels);
 
     private final ServerChannelInitializer initializer = new ServerChannelInitializer();
     private final ServerMessageHandler messageHandler = new ServerMessageHandler(this);
     private final ProxyServerHandler proxyServerHandler;
+    private final ServerRateLimiter rateLimiter = new ServerRateLimiter(this);
     private final ServerDatagramHandler serverDatagramHandler = new ServerDatagramHandler(this);
     private final RakExceptionHandler exceptionHandler = new RakExceptionHandler(this);
 
-    private volatile RakNetServerListener listener = null;
+    private RakNetServerListener listener = null;
+    private int packetLimit = DEFAULT_PACKET_LIMIT;
 
     public RakNetServer(InetSocketAddress bindAddress) {
         this(bindAddress, 1);
@@ -69,7 +82,14 @@ public class RakNetServer extends RakNet {
         this.bindThreads = bindThreads;
         this.bindAddress = bindAddress;
         this.useProxyProtocol = useProxyProtocol;
-        this.proxiedAddresses = ExpiringMap.builder().expiration(30 + 1, TimeUnit.MINUTES).expirationPolicy(ExpirationPolicy.ACCESSED).build();
+        for (int i = 0; i < this.sessionCreationLocks.length; i++) {
+            this.sessionCreationLocks[i] = new Object();
+        }
+        this.proxiedAddresses = ExpiringMap.builder()
+                .maxSize(MAXIMUM_PROXIED_ADDRESS_COUNT)
+                .expiration(30 + 1, TimeUnit.MINUTES)
+                .expirationPolicy(ExpirationPolicy.ACCESSED)
+                .build();
         this.proxyServerHandler = useProxyProtocol ? new ProxyServerHandler(this) : null;
     }
 
@@ -91,7 +111,11 @@ public class RakNetServer extends RakNet {
     @Override
     public void close(boolean force) {
         super.close(force);
-        for (RakNetServerSession session : this.sessionsByAddress.values()) {
+        List<RakNetServerSession> sessions;
+        synchronized (this.sessionAdmissionLock) {
+            sessions = new ArrayList<>(this.sessionsByAddress.values());
+        }
+        for (RakNetServerSession session : sessions) {
             session.disconnect(DisconnectReason.SHUTTING_DOWN);
         }
         for (Channel channel : this.channels) {
@@ -102,6 +126,7 @@ public class RakNetServer extends RakNet {
     @Override
     protected void onTick() {
         final long curTime = System.currentTimeMillis();
+        this.rateLimiter.onTick(curTime);
         Iterator<Long> blockedAddresses = this.blockAddresses.values().iterator();
         long timeout;
         while (blockedAddresses.hasNext()) {
@@ -113,7 +138,7 @@ public class RakNetServer extends RakNet {
     }
 
     public void onOpenConnectionRequest1(ChannelHandlerContext ctx, DatagramPacket packet) {
-        if (!packet.content().isReadable(16)) {
+        if (this.isClosed() || !packet.content().isReadable(17)) {
             return;
         }
         // We want to do as many checks as possible before creating a session so memory is not wasted.
@@ -122,41 +147,88 @@ public class RakNetServer extends RakNet {
             return;
         }
         int protocolVersion = buffer.readUnsignedByte();
-        int mtu = buffer.readableBytes() + 1 + 16 + 1 + (packet.sender().getAddress() instanceof Inet6Address ? 40 : 20)
+        int mtu = buffer.readableBytes() + 1 + 16 + 1 + (packet.sender().getAddress() instanceof Inet6Address ? IPV6_HEADER_SIZE : IPV4_HEADER_SIZE)
                 + UDP_HEADER_SIZE; // 1 (Packet ID), 16 (Magic), 1 (Protocol Version), 20/40 (IP Header)
-
-        RakNetServerSession session = this.sessionsByAddress.get(packet.sender());
-        final InetSocketAddress clientAddress;
-        final InetSocketAddress proxiedAddress;
-        if (useProxyProtocol && (proxiedAddress = this.proxiedAddresses.get(packet.sender())) != null) {
-            clientAddress = proxiedAddress;
-        } else {
-            clientAddress = packet.sender();
+        if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
+            return;
         }
 
-        if (session != null && session.getState() == RakNetState.CONNECTED) {
-            this.sendAlreadyConnected(ctx, packet.sender());
-        /*} else if (this.protocolVersion >= 0 && this.protocolVersion != protocolVersion) {
-            this.sendIncompatibleProtocolVersion(ctx, packet.sender());
-        */} else if (this.maxConnections >= 0 && this.maxConnections <= getSessionCount()) {
-            this.sendNoFreeIncomingConnections(ctx, packet.sender());
-        } else if (this.listener != null && !this.listener.onConnectionRequest(packet.sender(), clientAddress)) {
-            this.sendConnectionBanned(ctx, packet.sender());
-        } else if (session == null) {
-            // Passed all checks. Now create the session and send the first reply.
-            session = new RakNetServerSession(this, packet.sender(), ctx.channel(),
-                    ctx.channel().eventLoop().next(), mtu, protocolVersion);
-            if (this.sessionsByAddress.putIfAbsent(packet.sender(), session) == null) {
-                session.setState(RakNetState.INITIALIZING);
-                session.proxiedAddress = this.proxiedAddresses.get(packet.sender());
-                session.sendOpenConnectionReply1();
-                if (listener != null) {
-                    listener.onSessionCreation(session);
-                }
+        synchronized (this.getSessionCreationLock(packet.sender())) {
+            if (this.isClosed()) {
+                return;
             }
-        } else {
-            session.sendOpenConnectionReply1(); // probably a packet loss occurred, send the reply again
+            RakNetServerSession session = this.sessionsByAddress.get(packet.sender());
+            InetSocketAddress proxiedAddress = this.useProxyProtocol ? (session == null ? this.proxiedAddresses.get(packet.sender()) : session.proxiedAddress) : null;
+            if (this.useProxyProtocol && session == null && proxiedAddress == null) {
+                return;
+            }
+            InetSocketAddress clientAddress = proxiedAddress == null ? packet.sender() : proxiedAddress;
+            if (session != null && session.getState() == RakNetState.CONNECTED) {
+                this.sendAlreadyConnected(ctx, packet.sender());
+            /*} else if (this.protocolVersion >= 0 && this.protocolVersion != protocolVersion) { // multi-version compatibility
+                this.sendIncompatibleProtocolVersion(ctx, packet.sender());
+            */} else if (session == null) {
+                InetAddress quotaAddress = clientAddress.getAddress();
+                if (quotaAddress == null || !this.tryAcquireSession(quotaAddress)) {
+                    this.sendNoFreeIncomingConnections(ctx, packet.sender());
+                    return;
+                }
+
+                RakNetServerSession newSession = null;
+                boolean reservationsRegistered = false;
+                boolean installed = false;
+                RakNetServerListener listener = this.listener;
+                try {
+                    if (listener != null && !listener.onConnectionRequest(packet.sender(), clientAddress)) {
+                        this.sendConnectionBanned(ctx, packet.sender());
+                        return;
+                    }
+                    newSession = new RakNetServerSession(this, packet.sender(), ctx.channel(), ctx.channel().eventLoop().next(), mtu, protocolVersion);
+                    newSession.registerPendingSession();
+                    newSession.registerSessionQuota(quotaAddress);
+                    newSession.proxiedAddress = proxiedAddress;
+                    reservationsRegistered = true;
+
+                    boolean sessionInstalled;
+                    synchronized (this.sessionAdmissionLock) {
+                        sessionInstalled = !this.isClosed() && this.sessionsByAddress.putIfAbsent(packet.sender(), newSession) == null;
+                    }
+                    if (sessionInstalled) {
+                        installed = true;
+                        try {
+                            newSession.setState(RakNetState.INITIALIZING);
+                            newSession.sendOpenConnectionReply1();
+                            if (this.isClosed()) {
+                                newSession.disconnect(DisconnectReason.SHUTTING_DOWN);
+                            }
+                        } catch (RuntimeException | Error throwable) {
+                            newSession.close(DisconnectReason.DISCONNECTED);
+                            throw throwable;
+                        }
+                    } else {
+                        RakNetServerSession existingSession = this.sessionsByAddress.get(packet.sender());
+                        if (existingSession != null) {
+                            existingSession.sendOpenConnectionReply1();
+                        }
+                    }
+                } finally {
+                    if (!installed) {
+                        if (reservationsRegistered) {
+                            newSession.releaseSessionReservations();
+                        } else {
+                            this.releaseSession(quotaAddress, true);
+                        }
+                    }
+                }
+            } else {
+                session.sendOpenConnectionReply1(); // probably a packet loss occurred, send the reply again
+            }
         }
+    }
+
+    Object getSessionCreationLock(InetSocketAddress address) {
+        int hash = address.hashCode();
+        return this.sessionCreationLocks[(hash ^ hash >>> 16) & (this.sessionCreationLocks.length - 1)];
     }
 
     public void block(InetAddress address) {
@@ -180,11 +252,45 @@ public class RakNetServer extends RakNet {
     }
 
     public void addProxiedAddress(InetSocketAddress address, InetSocketAddress presentAddress) {
-        this.proxiedAddresses.put(address, presentAddress);
+        synchronized (this.getSessionCreationLock(address)) {
+            this.proxiedAddresses.put(address, presentAddress);
+        }
+    }
+
+    public boolean updateProxiedAddress(InetSocketAddress address, InetSocketAddress presentAddress) {
+        synchronized (this.getSessionCreationLock(address)) {
+            if (this.sessionsByAddress.containsKey(address)) {
+                return false;
+            }
+            this.proxiedAddresses.put(address, presentAddress);
+            return true;
+        }
+    }
+
+    public void forwardProxiedDatagram(ChannelHandlerContext ctx, DatagramPacket packet, @Nullable RakNetServerSession expectedSession, InetSocketAddress expectedAddress) {
+        synchronized (this.getSessionCreationLock(packet.sender())) {
+            RakNetServerSession session = this.sessionsByAddress.get(packet.sender());
+            if (expectedSession == null) {
+                if (session != null || !expectedAddress.equals(this.proxiedAddresses.get(packet.sender()))) {
+                    return;
+                }
+            } else if (session != expectedSession) {
+                return;
+            }
+
+            InetAddress address = expectedAddress.getAddress();
+            if (address == null || !this.isBlocked(address)) {
+                ctx.fireChannelRead(packet.retain());
+            }
+        }
     }
 
     public InetSocketAddress getProxiedAddress(InetSocketAddress address) {
         return this.proxiedAddresses.get(address);
+    }
+
+    public boolean removeProxiedAddress(InetSocketAddress address, InetSocketAddress expectedAddress) {
+        return this.proxiedAddresses.remove(address, expectedAddress);
     }
 
     public int getProxiedAddressSize() {
@@ -207,6 +313,102 @@ public class RakNetServer extends RakNet {
 
     public void setMaxConnections(@Nonnegative int maxConnections) {
         this.maxConnections = maxConnections;
+    }
+
+    public int getMaxConnectionsPerIp() {
+        return this.maxConnectionsPerIp;
+    }
+
+    public void setMaxConnectionsPerIp(int maxConnectionsPerIp) {
+        if (maxConnectionsPerIp <= 0) {
+            throw new IllegalArgumentException("maxConnectionsPerIp must be positive");
+        }
+        this.maxConnectionsPerIp = maxConnectionsPerIp;
+    }
+
+    public int getSessionCount(InetAddress address) {
+        Objects.requireNonNull(address, "address");
+        synchronized (this.sessionQuotaLock) {
+            return this.sessionCountsByAddress.getOrDefault(address, 0);
+        }
+    }
+
+    public int getMaxPendingSessions() {
+        return this.maxPendingSessions;
+    }
+
+    public void setMaxPendingSessions(int maxPendingSessions) {
+        if (maxPendingSessions <= 0) {
+            throw new IllegalArgumentException("maxPendingSessions must be positive");
+        }
+        this.maxPendingSessions = maxPendingSessions;
+    }
+
+    public int getPendingSessionCount() {
+        synchronized (this.sessionQuotaLock) {
+            return this.pendingSessionCount;
+        }
+    }
+
+    private boolean tryAcquireSession(InetAddress address) {
+        int maxConnections = this.maxConnections;
+        synchronized (this.sessionQuotaLock) {
+            int addressCount;
+            if (maxConnections > 0 && this.reservedSessionCount >= maxConnections ||
+                    (addressCount = this.sessionCountsByAddress.getOrDefault(address, 0)) >= this.maxConnectionsPerIp ||
+                    this.pendingSessionCount >= this.maxPendingSessions) {
+                return false;
+            }
+            this.reservedSessionCount++;
+            this.pendingSessionCount++;
+            this.sessionCountsByAddress.put(address, addressCount + 1);
+            return true;
+        }
+    }
+
+    void releaseSession(InetAddress address, boolean pending) {
+        synchronized (this.sessionQuotaLock) {
+            int addressCount = this.sessionCountsByAddress.getOrDefault(address, 0);
+            if (this.reservedSessionCount <= 0 || addressCount <= 0 || pending && this.pendingSessionCount <= 0) {
+                throw new IllegalStateException("Session count became negative");
+            }
+            this.reservedSessionCount--;
+            if (pending) {
+                this.pendingSessionCount--;
+            }
+            if (addressCount == 1) {
+                this.sessionCountsByAddress.removeInt(address);
+            } else {
+                this.sessionCountsByAddress.put(address, addressCount - 1);
+            }
+        }
+    }
+
+    void releasePendingSession() {
+        synchronized (this.sessionQuotaLock) {
+            if (this.pendingSessionCount <= 0) {
+                throw new IllegalStateException("Pending session count became negative");
+            }
+            this.pendingSessionCount--;
+        }
+    }
+
+    void notifySessionCreation(RakNetServerSession session) {
+        RakNetServerListener listener = this.listener;
+        if (listener != null) {
+            listener.onSessionCreation(session);
+        }
+    }
+
+    public int getPacketLimit() {
+        return this.packetLimit;
+    }
+
+    public void setPacketLimit(int packetLimit) {
+        if (packetLimit <= 0) {
+            throw new IllegalArgumentException("packetLimit must be positive");
+        }
+        this.packetLimit = packetLimit;
     }
 
     @Override
@@ -269,6 +471,7 @@ public class RakNetServer extends RakNet {
         @Override
         protected void initChannel(Channel channel) throws Exception {
             ChannelPipeline pipeline = channel.pipeline();
+            pipeline.addLast(ServerRateLimiter.NAME, RakNetServer.this.rateLimiter);
             if (RakNetServer.this.useProxyProtocol()) {
                 pipeline.addLast(ProxyServerHandler.NAME, RakNetServer.this.proxyServerHandler);
             }

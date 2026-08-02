@@ -3,6 +3,7 @@ netty = "4.2.16.Final"
 
 [libraries]
 expiringmap = { module = "net.jodah:expiringmap", version = "0.5.11" }
+fastutil = { module = "it.unimi.dsi:fastutil", version = "8.5.18" }
 javax-annotations = { module = "com.google.code.findbugs:jsr305", version = "3.0.2" }
 lombok = { module = "org.projectlombok:lombok", version = "1.18.46" }
 netty-all = { module = "io.netty:netty-all", version.ref = "netty" }

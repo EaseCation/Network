@@ -2,25 +2,28 @@ package com.nukkitx.network.raknet;
 
 import lombok.experimental.UtilityClass;
 
-import java.net.Inet4Address;
-import java.net.Inet6Address;
 import java.net.InetSocketAddress;
 
 @UtilityClass
 public class RakNetConstants {
 
-    public static final byte RAKNET_PROTOCOL_VERSION = 10; // Mojang's version.
+    public static final byte RAKNET_PROTOCOL_VERSION = 8; // NetEase's version.
     public static final short MINIMUM_MTU_SIZE = 576;
-    public static short MAXIMUM_MTU_SIZE = 1400;
+    public static final short MAXIMUM_MTU_SIZE = 1400;
+    public static final int MAXIMUM_OFFLINE_DATA_LENGTH = 400;
     /**
      * Maximum amount of ordering channels as defined in vanilla RakNet.
      */
-    public static final int MAXIMUM_ORDERING_CHANNELS = 16;
+    public static final int MAXIMUM_ORDERING_CHANNELS = 32;
+    public static final int MAXIMUM_SPLIT_PACKET_COUNT = 8192; // 131072
+    public static final int SPLIT_ID_MASK = 0xFFFF;
     /**
      * Maximum size of an {@link EncapsulatedPacket} header.
      */
     public static final int MAXIMUM_ENCAPSULATED_HEADER_SIZE = 28;
 
+    public static final int IPV4_HEADER_SIZE = 20;
+    public static final int IPV6_HEADER_SIZE = 40;
     public static final int UDP_HEADER_SIZE = 8;
 
     public static final int RAKNET_DATAGRAM_HEADER_SIZE = 4;
@@ -39,10 +42,16 @@ public class RakNetConstants {
      */
     public static final int RAKNET_PING_INTERVAL = 1000;
     /**
+     * A number of datagram packets each address can send within one RakNet tick (10ms)
+     */
+    public static final int DEFAULT_PACKET_LIMIT = 120;
+    public static final int RATE_LIMIT_BLOCK_DURATION_MS = 10000;
+    /**
      * How many Stale Datagrams a {@link RakNetSession} can hold before been
      * forcefully closed
      */
     public static final int MAXIMUM_STALE_DATAGRAMS = 1024;
+    public static final int MAXIMUM_PENDING_ACKNOWLEDGE_RANGES = MAXIMUM_STALE_DATAGRAMS;
 
     /*
         Flags
@@ -104,19 +113,20 @@ public class RakNetConstants {
     public static final int IPV4_MESSAGE_SIZE = 7;
     public static final int IPV6_MESSAGE_SIZE = 29;
 
-    public static final InetSocketAddress LOOPBACK_V4 = new InetSocketAddress(Inet4Address.getLoopbackAddress(), 19132);
-    public static final InetSocketAddress LOOPBACK_V6 = new InetSocketAddress(Inet6Address.getLoopbackAddress(), 19132);
-    public static final InetSocketAddress[] LOCAL_IP_ADDRESSES_V4 = new InetSocketAddress[20];
-    public static final InetSocketAddress[] LOCAL_IP_ADDRESSES_V6 = new InetSocketAddress[20];
+    public static final InetSocketAddress LOOPBACK_V4 = new InetSocketAddress("127.0.0.1", 0);
+    public static final InetSocketAddress LOOPBACK_V6 = new InetSocketAddress("::1", 0);
+    public static final int SYSTEM_ADDRESS_COUNT = 20;
+    public static final InetSocketAddress[] LOCAL_IP_ADDRESSES_V4 = new InetSocketAddress[SYSTEM_ADDRESS_COUNT];
+    public static final InetSocketAddress[] LOCAL_IP_ADDRESSES_V6 = new InetSocketAddress[SYSTEM_ADDRESS_COUNT];
 
 
     static {
         LOCAL_IP_ADDRESSES_V4[0] = LOOPBACK_V4;
         LOCAL_IP_ADDRESSES_V6[0] = LOOPBACK_V6;
 
-        for (int i = 1; i < 20; i++) {
-            LOCAL_IP_ADDRESSES_V4[i] = new InetSocketAddress("0.0.0.0", 19132);
-            LOCAL_IP_ADDRESSES_V6[i] = new InetSocketAddress("::0", 19132);
+        for (int i = 1; i < SYSTEM_ADDRESS_COUNT; i++) {
+            LOCAL_IP_ADDRESSES_V4[i] = new InetSocketAddress("0.0.0.0", 0);
+            LOCAL_IP_ADDRESSES_V6[i] = new InetSocketAddress("::0", 0);
         }
     }
 }

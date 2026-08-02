@@ -3,6 +3,7 @@ package com.nukkitx.network.raknet;
 import com.nukkitx.network.raknet.pipeline.ClientMessageHandler;
 import com.nukkitx.network.raknet.pipeline.RakExceptionHandler;
 import com.nukkitx.network.raknet.pipeline.RakOutboundHandler;
+import com.nukkitx.network.util.DisconnectReason;
 import com.nukkitx.network.util.EventLoops;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -110,7 +111,14 @@ public class RakNetClient extends RakNet {
         final long curTime = System.currentTimeMillis();
         final RakNetClientSession session = this.session;
         if (session != null && !session.isClosed()) {
-            session.eventLoop.execute(() -> session.onTick(curTime));
+            session.eventLoop.execute(() -> {
+                try {
+                    session.onTick(curTime);
+                } catch (Exception exception) {
+                    log.error("RakNet client tick exception", exception);
+                    session.close(DisconnectReason.DISCONNECTED);
+                }
+            });
         }
 
         Iterator<Map.Entry<InetSocketAddress, PingEntry>> iterator = this.pings.entrySet().iterator();
@@ -134,6 +142,10 @@ public class RakNetClient extends RakNet {
         } else {
             eventLoop.execute(() -> this.onUnconnectedPong0(entry));
         }
+    }
+
+    public boolean isPingPending(InetSocketAddress address) {
+        return this.pings.containsKey(address);
     }
 
     private void onUnconnectedPong0(PongEntry pong) {

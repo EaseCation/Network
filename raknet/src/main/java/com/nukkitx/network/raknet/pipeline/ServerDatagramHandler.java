@@ -1,6 +1,7 @@
 package com.nukkitx.network.raknet.pipeline;
 
 import com.nukkitx.network.raknet.RakNetServer;
+import com.nukkitx.network.raknet.RakNetServerListener;
 import com.nukkitx.network.raknet.RakNetServerSession;
 import com.nukkitx.network.raknet.RakNetUtils;
 import io.netty.buffer.ByteBuf;
@@ -38,33 +39,45 @@ public class ServerDatagramHandler extends SimpleChannelInboundHandler<DatagramP
         buffer.readerIndex(0);
 
         RakNetServerSession session = this.server.getSession(packet.sender());
+        RakNetServerListener listener;
         if (session != null) {
             if (session.getEventLoop().inEventLoop()) {
                 session.onDatagram(buffer.retain());
             } else {
                 ByteBuf buf = buffer.retain();
-                session.getEventLoop().execute(() -> session.onDatagram(buf));
+                try {
+                    session.getEventLoop().execute(() -> session.onDatagram(buf));
+                } catch (RuntimeException exception) {
+                    buf.release();
+                    throw exception;
+                }
             }
-        } else if (this.server.getListener() != null) {
-            this.server.getListener().onUnhandledDatagram(ctx, packet);
+        } else if ((listener = this.server.getListener()) != null) {
+            listener.onUnhandledDatagram(ctx, packet);
         }
     }
 
     private void onUnconnectedPing(ChannelHandlerContext ctx, DatagramPacket packet) {
-        if (!packet.content().isReadable(8)) { // NetEase has only 8 readable bytes instead of 24 readable bytes.
+        ByteBuf content = packet.content();
+        if (!content.isReadable(Long.BYTES)) { // NetEase has only 8 readable bytes instead of 24 readable bytes.
             return;
         }
 
-        long pingTime = packet.content().readLong();
-//        if (!RakNetUtils.verifyUnconnectedMagic(packet.content())) {
-//            return;
-//        }
-
-        byte[] userData = null;
-        if (this.server.getListener() != null) {
-            userData = this.server.getListener().onQuery(packet.sender());
+        long pingTime = content.readLong();
+        if (content.isReadable() && (!content.isReadable(16) || !RakNetUtils.verifyUnconnectedMagic(content))) {
+            return;
         }
 
+        byte[] userData = null;
+        RakNetServerListener listener = this.server.getListener();
+        if (listener != null) {
+            userData = listener.onQuery(packet.sender());
+        }
+
+        if (userData != null && userData.length >= MAXIMUM_OFFLINE_DATA_LENGTH) {
+            // perhaps throw an exception?
+            return;
+        }
         if (userData == null) {
             userData = new byte[0];
         }

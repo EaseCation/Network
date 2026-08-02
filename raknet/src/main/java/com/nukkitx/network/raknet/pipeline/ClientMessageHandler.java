@@ -9,10 +9,13 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.DatagramPacket;
 
-import static com.nukkitx.network.raknet.RakNetConstants.ID_UNCONNECTED_PONG;
+import static com.nukkitx.network.raknet.RakNetConstants.*;
 
 public class ClientMessageHandler extends SimpleChannelInboundHandler<DatagramPacket> {
     public static final String NAME = "rak-client-message-handler";
+
+    private static final int UNCONNECTED_MAGIC_LENGTH = 16;
+    private static final int UNCONNECTED_PONG_HEADER_SIZE = Byte.BYTES + (Long.BYTES * 2) + UNCONNECTED_MAGIC_LENGTH + Short.BYTES;
 
     private final RakNetClient client;
 
@@ -23,7 +26,7 @@ public class ClientMessageHandler extends SimpleChannelInboundHandler<DatagramPa
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket packet) throws Exception {
         ByteBuf buffer = packet.content();
-        if (!buffer.isReadable()) {
+        if (!buffer.isReadable() || buffer.readableBytes() > MAXIMUM_MTU_SIZE) {
             return;
         }
 
@@ -47,23 +50,37 @@ public class ClientMessageHandler extends SimpleChannelInboundHandler<DatagramPa
         if (session.getEventLoop().inEventLoop()) {
             session.onDatagram(buf);
         } else {
-            session.getEventLoop().execute(() -> session.onDatagram(buf));
+            try {
+                session.getEventLoop().execute(() -> session.onDatagram(buf));
+            } catch (RuntimeException exception) {
+                buf.release();
+                throw exception;
+            }
         }
     }
 
     private void onUnconnectedPong(DatagramPacket packet) {
+        if (!this.client.isPingPending(packet.sender())) {
+            return;
+        }
         ByteBuf content = packet.content();
+        if (!content.isReadable(UNCONNECTED_PONG_HEADER_SIZE - Byte.BYTES)) {
+            return;
+        }
+
         long pingTime = content.readLong();
         long guid = content.readLong();
         if (!RakNetUtils.verifyUnconnectedMagic(content)) {
             return;
         }
 
-        byte[] userData = null;
-        if (content.isReadable()) {
-            userData = new byte[content.readUnsignedShort()];
-            content.readBytes(userData);
+        int userDataLength = content.readUnsignedShort();
+        if (userDataLength >= MAXIMUM_OFFLINE_DATA_LENGTH || !content.isReadable(userDataLength)) {
+            return;
         }
+
+        byte[] userData = new byte[userDataLength];
+        content.readBytes(userData);
         this.client.onUnconnectedPong(new RakNetClient.PongEntry(packet.sender(), pingTime, guid, userData));
     }
 }

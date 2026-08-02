@@ -8,6 +8,8 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.DatagramPacket;
 
+import static com.nukkitx.network.raknet.RakNetConstants.*;
+
 @ChannelHandler.Sharable
 public class ServerMessageHandler extends SimpleChannelInboundHandler<DatagramPacket> {
     public static final String NAME = "rak-server-message-handler";
@@ -25,7 +27,7 @@ public class ServerMessageHandler extends SimpleChannelInboundHandler<DatagramPa
         }
 
         ByteBuf buffer = packet.content();
-        if (!buffer.isReadable()) {
+        if (!buffer.isReadable() || buffer.readableBytes() > MAXIMUM_MTU_SIZE) {
             return;
         }
 

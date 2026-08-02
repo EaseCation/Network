@@ -4,6 +4,8 @@ import com.nukkitx.network.raknet.RakNetUtils;
 
 public class BitQueue {
 
+    private static final int MINIMUM_CAPACITY = 512;
+
     private byte[] queue;
     private int head;
     private int tail;
@@ -74,6 +76,21 @@ public class BitQueue {
         }
 
         this.queue = newQueue;
+    }
+
+    public void compact() {
+        int capacity = this.capacity();
+        int size = this.size();
+        if (capacity <= MINIMUM_CAPACITY || capacity <= (long) size * 3) {
+            return;
+        }
+
+        int compactedCapacity = Math.max(MINIMUM_CAPACITY, RakNetUtils.powerOfTwoCeiling(size + 1));
+        this.resize(compactedCapacity);
+    }
+
+    int capacity() {
+        return this.queue.length << 3;
     }
 
     public int size() {

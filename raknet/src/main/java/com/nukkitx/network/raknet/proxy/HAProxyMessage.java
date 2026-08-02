@@ -203,21 +203,25 @@ public final class HAProxyMessage {
             dstPort = header.readUnsignedShort();
         }
 
-        while (skipNextTLV(header)) {
-
+        while (header.isReadable()) {
+            skipNextTLV(header);
         }
         return new HAProxyMessage(ver, cmd, protAndFam, srcAddress, dstAddress, srcPort, dstPort);
     }
 
-    private static boolean skipNextTLV(final ByteBuf header) {
-        // We need at least 4 bytes for a TLV
-        if (header.readableBytes() < 4) {
-            return false;
+    private static void skipNextTLV(final ByteBuf header) {
+        int readableBytes = header.readableBytes();
+        if (readableBytes < 3) {
+            throw new HAProxyProtocolException("incomplete TLV header: " + readableBytes + " bytes (expected: 3+ bytes)");
         }
 
-        header.skipBytes(1);
-        header.skipBytes(header.readUnsignedShort());
-        return true;
+        int valueLength = header.getUnsignedShort(header.readerIndex() + 1);
+        int remainingBytes = readableBytes - 3;
+        if (valueLength > remainingBytes) {
+            throw new HAProxyProtocolException("incomplete TLV value: " + remainingBytes + " bytes (expected: " + valueLength + " bytes)");
+        }
+
+        header.skipBytes(3 + valueLength);
     }
 
     /**

@@ -46,11 +46,12 @@ public class RakNetSlidingWindow {
             this.oldestUnsentAck = curTime;
         }
 
+        int sequenceDelta = RakNetUtils.getSequenceIndexDelta(sequenceNumber, this.expectedNextSequenceNumber);
         int skippedMessageCount = 0;
-        if (sequenceNumber == this.expectedNextSequenceNumber) {
+        if (sequenceDelta == 0) {
             this.expectedNextSequenceNumber = sequenceNumber + 1 & 0xFFFFFF;
-        } else if (sequenceNumber > this.expectedNextSequenceNumber || this.expectedNextSequenceNumber - sequenceNumber > 0x7FFFFF) {
-            skippedMessageCount = sequenceNumber - this.expectedNextSequenceNumber & 0xFFFFFF;
+        } else if (RakNetUtils.isSequenceIndexAhead(sequenceNumber, this.expectedNextSequenceNumber)) {
+            skippedMessageCount = sequenceDelta;
             if (skippedMessageCount > 1000) {
                 if (skippedMessageCount > 50000) {
                     log.debug("Too many stale data: {}", skippedMessageCount);
@@ -109,7 +110,7 @@ public class RakNetSlidingWindow {
             return;
         }
 
-        boolean isNewCongestionControlPeriod = sequenceIndex > this.nextCongestionControlBlock || this.nextCongestionControlBlock - sequenceIndex > 0x7FFFFF;
+        boolean isNewCongestionControlPeriod = RakNetUtils.isSequenceIndexAhead(sequenceIndex, this.nextCongestionControlBlock);
 
         if (isNewCongestionControlPeriod) {
             this.backoffThisBlock = false;

@@ -7,7 +7,38 @@ import java.net.*;
 
 @UtilityClass
 public class NetworkUtils {
+    private static final int IPV4_ADDRESS_SIZE = 7;
+    private static final int IPV6_ADDRESS_SIZE = 29;
+
     private static final int AF_INET6 = 23;
+
+    private static int getAddressSize(int type) {
+        if (type == 4) {
+            return IPV4_ADDRESS_SIZE;
+        }
+        if (type == 6) {
+            return IPV6_ADDRESS_SIZE;
+        }
+        return -1;
+    }
+
+    public static boolean isAddressReadable(ByteBuf buffer) {
+        if (!buffer.isReadable()) {
+            return false;
+        }
+
+        int size = getAddressSize(buffer.getUnsignedByte(buffer.readerIndex()));
+        return size > 0 && buffer.isReadable(size);
+    }
+
+    public static boolean skipAddress(ByteBuf buffer) {
+        if (!isAddressReadable(buffer)) {
+            return false;
+        }
+
+        buffer.skipBytes(getAddressSize(buffer.getUnsignedByte(buffer.readerIndex())));
+        return true;
+    }
 
     public static InetSocketAddress readAddress(ByteBuf buffer) {
         short type = buffer.readByte();

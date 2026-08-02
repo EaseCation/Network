@@ -23,7 +23,7 @@ public class EncapsulatedPacket implements ReferenceCounted {
     boolean needsBAS;
 
     public void encode(ByteBuf buf) {
-        int flags = reliability.ordinal() << 5;
+        int flags = reliability.getId() << 5;
         if (split) {
             flags |= RakNetConstants.FLAG_PACKET_PAIR;
         }
@@ -56,12 +56,39 @@ public class EncapsulatedPacket implements ReferenceCounted {
         // If we need to resend, we don't want the buffer's reader index changing.
     }
 
-    public void decode(ByteBuf buf) {
-        byte flags = buf.readByte();
-        reliability = RakNetReliability.fromId((flags & 0b11100000) >> 5);
-        split = (flags & RakNetConstants.FLAG_PACKET_PAIR) != 0;
-        needsBAS = (flags & RakNetConstants.FLAG_NEEDS_B_AND_AS) != 0;
-        int size = (buf.readUnsignedShort() + 7) >> 3;
+    public boolean decode(ByteBuf buf) {
+        int readerIndex = buf.readerIndex();
+        int readableBytes = buf.readableBytes();
+        if (readableBytes < 3) {
+            return false;
+        }
+
+        int flags = buf.getUnsignedByte(readerIndex);
+        RakNetReliability reliability = RakNetReliability.fromId((flags & 0b11100000) >> 5);
+        if (reliability == null) {
+            return false;
+        }
+
+        boolean split = (flags & RakNetConstants.FLAG_PACKET_PAIR) != 0;
+        int headerSize = 3 + reliability.getSize() + (split ? 10 : 0);
+        if (readableBytes < headerSize) {
+            return false;
+        }
+
+        int bitLength = buf.getUnsignedShort(readerIndex + 1);
+        int size = (bitLength + 7) >>> 3;
+        if (size == 0 || readableBytes - headerSize < size) {
+            return false;
+        }
+
+        buf.skipBytes(3);
+        int reliabilityIndex = 0;
+        int sequenceIndex = 0;
+        int orderingIndex = 0;
+        short orderingChannel = 0;
+        int partCount = 0;
+        int partId = 0;
+        int partIndex = 0;
 
         if (reliability.isReliable()) {
             reliabilityIndex = buf.readUnsignedMediumLE();
@@ -82,8 +109,19 @@ public class EncapsulatedPacket implements ReferenceCounted {
             partIndex = buf.readInt();
         }
 
-        // Slice the buffer to use less memory
-        buffer = buf.readSlice(size);
+        ByteBuf buffer = buf.readSlice(size);
+        this.reliability = reliability;
+        this.reliabilityIndex = reliabilityIndex;
+        this.sequenceIndex = sequenceIndex;
+        this.orderingIndex = orderingIndex;
+        this.orderingChannel = orderingChannel;
+        this.split = split;
+        this.partCount = partCount;
+        this.partId = partId;
+        this.partIndex = partIndex;
+        this.buffer = buffer;
+        this.needsBAS = (flags & RakNetConstants.FLAG_NEEDS_B_AND_AS) != 0;
+        return true;
     }
 
     public int getSize() {
@@ -141,4 +179,3 @@ public class EncapsulatedPacket implements ReferenceCounted {
         return buffer.release(i);
     }
 }
-

@@ -64,7 +64,7 @@ public class FastBinaryMinHeap {
         Objects.requireNonNull(elements, "elements");
         if (elements.length == 0) return;
 
-        this.ensureCapacity(this.size + elements.length);
+        this.ensureCapacity(this.size + 1);
 
         this.insert0(weight, elements);
     }
