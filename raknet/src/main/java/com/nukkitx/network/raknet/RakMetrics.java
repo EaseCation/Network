@@ -1,6 +1,11 @@
 package com.nukkitx.network.raknet;
 
+import java.net.InetSocketAddress;
+
 public interface RakMetrics {
+
+    default void invalidCookie(InetSocketAddress address) {
+    }
 
     default void bytesIn(int count) {
     }

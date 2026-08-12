@@ -34,6 +34,9 @@ public class ServerDatagramHandler extends SimpleChannelInboundHandler<DatagramP
             case ID_OPEN_CONNECTION_REQUEST_1:
                 this.server.onOpenConnectionRequest1(ctx, packet);
                 return;
+            case ID_OPEN_CONNECTION_REQUEST_2:
+                this.server.onOpenConnectionRequest2(ctx, packet);
+                return;
         }
 
         buffer.readerIndex(0);

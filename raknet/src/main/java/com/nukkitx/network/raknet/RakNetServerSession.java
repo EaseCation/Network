@@ -31,9 +31,11 @@ public class RakNetServerSession extends RakNetSession {
     private InetAddress sessionQuotaAddress;
 
     RakNetServerSession(RakNetServer rakNet, InetSocketAddress remoteAddress, Channel channel, EventLoop eventLoop, int mtu,
-                        int protocolVersion) {
+                        int protocolVersion, long guid) {
         super(remoteAddress, channel, eventLoop, mtu, protocolVersion);
         this.rakNet = rakNet;
+        this.guid = guid;
+        this.setState(RakNetState.INITIALIZING);
     }
 
     @Override
@@ -45,9 +47,6 @@ public class RakNetServerSession extends RakNetSession {
         short packetId = buffer.readUnsignedByte();
         boolean handled = false;
         switch (packetId) {
-            case ID_OPEN_CONNECTION_REQUEST_2:
-                handled = this.onOpenConnectionRequest2(buffer);
-                break;
             case ID_CONNECTION_REQUEST:
                 handled = this.onConnectionRequest(buffer);
                 break;
@@ -91,6 +90,24 @@ public class RakNetServerSession extends RakNetSession {
         return this.rakNet;
     }
 
+    @Override
+    public void disconnect(DisconnectReason reason) {
+        synchronized (this.rakNet.getSessionCreationLock(this.address)) {
+            synchronized (this.rakNet.getSessionAdmissionLock()) {
+                super.disconnect(reason);
+            }
+        }
+    }
+
+    @Override
+    public void close(DisconnectReason reason) {
+        synchronized (this.rakNet.getSessionCreationLock(this.address)) {
+            synchronized (this.rakNet.getSessionAdmissionLock()) {
+                super.close(reason);
+            }
+        }
+    }
+
     private void onTick() {
         long curTime = System.currentTimeMillis();
         try {
@@ -99,56 +116,6 @@ public class RakNetServerSession extends RakNetSession {
             log.error("RakNet server tick exception", e);
             this.close(DisconnectReason.DISCONNECTED);
         }
-    }
-
-    private boolean onOpenConnectionRequest2(ByteBuf buffer) {
-        RakNetState state = this.getState();
-        if (state != RakNetState.INITIALIZING && state != RakNetState.INITIALIZED) {
-            return false;
-        }
-
-        if (!RakNetUtils.verifyUnconnectedMagic(buffer)) {
-            return false;
-        }
-
-        if (!NetworkUtils.skipAddress(buffer) || !buffer.isReadable(Short.BYTES + Long.BYTES)) {
-            return false;
-        }
-
-        int mtu = buffer.readUnsignedShort();
-        if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
-            return false;
-        }
-        long guid = buffer.readLong();
-
-        if (state == RakNetState.INITIALIZED) {
-            if (mtu != this.getMtu() || guid != this.guid) {
-                return false;
-            }
-            try {
-                this.sendOpenConnectionReply2();
-            } catch (RuntimeException | Error throwable) {
-                this.close(DisconnectReason.DISCONNECTED);
-                throw throwable;
-            }
-            return true;
-        }
-
-        try {
-            this.setMtu(mtu);
-            this.guid = guid;
-
-            // We can now accept RakNet datagrams.
-            this.initialize();
-
-            sendOpenConnectionReply2();
-            this.setState(RakNetState.INITIALIZED);
-            this.rakNet.notifySessionCreation(this);
-        } catch (RuntimeException | Error throwable) {
-            this.close(DisconnectReason.DISCONNECTED);
-            throw throwable;
-        }
-        return true;
     }
 
     private boolean onConnectionRequest(ByteBuf buffer) {
@@ -229,7 +196,56 @@ public class RakNetServerSession extends RakNetSession {
         }
     }
 
-    void sendOpenConnectionReply1() {
+    boolean matchesOpenConnectionRequest(int mtu, long guid, int protocolVersion) {
+        return mtu == this.getMtu() && guid == this.guid && protocolVersion == this.protocolVersion;
+    }
+
+    void initializeFromOpenConnectionRequest() {
+        if (!this.eventLoop.inEventLoop()) {
+            throw new IllegalStateException("Session must be initialized on its event loop");
+        }
+        if (!this.isOwnedByServer()) {
+            this.close(DisconnectReason.DISCONNECTED);
+            return;
+        }
+        // We can now accept RakNet datagrams.
+        this.initialize();
+        this.setState(RakNetState.INITIALIZED);
+        if (!this.isOwnedByServer()) {
+            this.close(DisconnectReason.DISCONNECTED);
+            return;
+        }
+        this.sendOpenConnectionReply2();
+        this.startTicking();
+        if (!this.isOwnedByServer()) {
+            this.close(DisconnectReason.DISCONNECTED);
+            return;
+        }
+        this.rakNet.notifySessionCreation(this);
+    }
+
+    private boolean isOwnedByServer() {
+        return !this.isClosingOrClosed() && !this.rakNet.isClosed() && this.rakNet.sessionsByAddress.get(this.address) == this;
+    }
+
+    void resendOpenConnectionReply2() {
+        if (this.isClosingOrClosed()) {
+            return;
+        }
+        if (this.eventLoop.inEventLoop()) {
+            this.sendOpenConnectionReply2IfActive();
+        } else {
+            this.eventLoop.execute(this::sendOpenConnectionReply2IfActive);
+        }
+    }
+
+    private void sendOpenConnectionReply2IfActive() {
+        if (this.getState() == RakNetState.INITIALIZED && this.isOwnedByServer()) {
+            this.sendOpenConnectionReply2();
+        }
+    }
+
+    private void startTicking() {
         synchronized (this.tickFutureLock) {
             if (this.isClosed()) {
                 return;
@@ -239,16 +255,6 @@ public class RakNetServerSession extends RakNetSession {
                 this.tickFuture = this.eventLoop.scheduleAtFixedRate(this::onTick, 0, 10, TimeUnit.MILLISECONDS);
             }
         }
-
-        ByteBuf buffer = this.allocateBuffer(28);
-
-        buffer.writeByte(ID_OPEN_CONNECTION_REPLY_1);
-        RakNetUtils.writeUnconnectedMagic(buffer);
-        buffer.writeLong(this.rakNet.guid);
-        buffer.writeBoolean(false); // Security
-        buffer.writeShort(this.getMtu());
-
-        this.sendDirect(buffer);
     }
 
     private void sendOpenConnectionReply2() {

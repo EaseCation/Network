@@ -17,6 +17,8 @@ public class RakNetClientSession extends RakNetSession {
     private final RakNetClient rakNet;
     private int connectionAttempts;
     private long nextConnectionAttempt;
+    private int cookie;
+    private boolean cookieReceived;
 
     RakNetClientSession(RakNetClient rakNet, InetSocketAddress address, Channel channel, EventLoop eventLoop, int mtu,
                         int protocolVersion) {
@@ -122,16 +124,24 @@ public class RakNetClientSession extends RakNetSession {
         if (!RakNetUtils.verifyUnconnectedMagic(buffer)) {
             return false;
         }
-        if (!buffer.isReadable(Long.BYTES + 1 + Short.BYTES)) {
+        if (!buffer.isReadable(Long.BYTES + 1)) {
             return false;
         }
 
         long guid = buffer.readLong();
         boolean security = buffer.readBoolean();
+        int cookie = 0;
+        if (security) {
+            if (!buffer.isReadable(Integer.BYTES + Short.BYTES)) {
+                return false;
+            }
+            cookie = buffer.readInt();
+        } else if (!buffer.isReadable(Short.BYTES)) {
+            return false;
+        }
         int mtu = buffer.readUnsignedShort();
 
-        if (security) {
-            this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+        if (buffer.isReadable()) {
             return false;
         }
         if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
@@ -139,6 +149,8 @@ public class RakNetClientSession extends RakNetSession {
         }
 
         this.guid = guid;
+        this.cookie = cookie;
+        this.cookieReceived = security;
         this.setMtu(mtu);
         this.setState(RakNetState.INITIALIZING);
 
@@ -175,6 +187,9 @@ public class RakNetClientSession extends RakNetSession {
         boolean security = buffer.readBoolean();
         if (security) {
             this.close(DisconnectReason.CONNECTION_REQUEST_FAILED);
+            return false;
+        }
+        if (buffer.isReadable()) {
             return false;
         }
         if (mtu < MINIMUM_MTU_SIZE || mtu > MAXIMUM_MTU_SIZE) {
@@ -239,9 +254,13 @@ public class RakNetClientSession extends RakNetSession {
     }
 
     private void sendOpenConnectionRequest2() {
-        ByteBuf buffer = this.allocateBuffer(34);
+        ByteBuf buffer = this.allocateBuffer(this.cookieReceived ? 39 : 34);
         buffer.writeByte(ID_OPEN_CONNECTION_REQUEST_2);
         RakNetUtils.writeUnconnectedMagic(buffer);
+        if (this.cookieReceived) {
+            buffer.writeInt(this.cookie);
+            buffer.writeBoolean(false);
+        }
         NetworkUtils.writeAddress(buffer, this.address);
         buffer.writeShort(this.getMtu());
         buffer.writeLong(this.rakNet.guid);
