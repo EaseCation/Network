@@ -15,7 +15,7 @@ public class RakNetConstants {
      * Maximum amount of ordering channels as defined in vanilla RakNet.
      */
     public static final int MAXIMUM_ORDERING_CHANNELS = 32;
-    public static final int MAXIMUM_SPLIT_PACKET_COUNT = 8192; // 131072
+    public static final int MAXIMUM_SPLIT_PACKET_COUNT = 16384; // 131072
     public static final int SPLIT_ID_MASK = 0xFFFF;
     /**
      * Maximum size of an {@link EncapsulatedPacket} header.
@@ -44,7 +44,7 @@ public class RakNetConstants {
     /**
      * A number of datagram packets each address can send within one RakNet tick (10ms)
      */
-    public static final int DEFAULT_PACKET_LIMIT = 120;
+    public static final int DEFAULT_PACKET_LIMIT = 512;
     public static final int RATE_LIMIT_BLOCK_DURATION_MS = 10000;
     /**
      * How many Stale Datagrams a {@link RakNetSession} can hold before been
