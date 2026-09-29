@@ -1,7 +1,12 @@
 [versions]
+mockito = "5.23.0"
+junit = "6.1.1"
 netty = "4.2.16.Final"
 
 [libraries]
+mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
 expiringmap = { module = "net.jodah:expiringmap", version = "0.5.11" }
 fastutil = { module = "it.unimi.dsi:fastutil", version = "8.5.18" }
 javax-annotations = { module = "com.google.code.findbugs:jsr305", version = "3.0.2" }

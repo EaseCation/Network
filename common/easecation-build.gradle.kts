@@ -4,6 +4,7 @@ plugins {
 }
 
 dependencies {
+    testImplementation(libs.jupiter.engine)
     api(libs.netty.buffer)
     api(libs.netty.epoll)
     api(libs.netty.kqueue)
