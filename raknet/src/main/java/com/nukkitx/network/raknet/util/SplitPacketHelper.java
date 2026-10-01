@@ -1,6 +1,7 @@
 package com.nukkitx.network.raknet.util;
 
 import com.nukkitx.network.raknet.EncapsulatedPacket;
+import com.nukkitx.network.raknet.RakNetPacketTrace;
 import com.nukkitx.network.raknet.RakNetReliability;
 import com.nukkitx.network.raknet.RakNetSession;
 import com.nukkitx.network.util.Preconditions;
@@ -116,6 +117,7 @@ public class SplitPacketHelper extends AbstractReferenceCounted {
             }
 
             EncapsulatedPacket reassembledPacket = this.packets[0].fromSplit(reassembled);
+            RakNetPacketTrace.inheritReceiveTime(reassembledPacket, this.packets);
             transferred = true;
             return reassembledPacket;
         } finally {

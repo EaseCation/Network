@@ -3,6 +3,9 @@ plugins {
 }
 
 dependencies {
+    testImplementation(libs.jupiter.engine)
+    testImplementation(libs.mockito.core)
+    testRuntimeOnly(libs.junit.launcher)
     api(project(":common"))
     api(libs.netty.handler)
     api(libs.expiringmap)
@@ -14,3 +17,7 @@ dependencies {
 
 group = "com.nukkitx.network"
 description = "raknet"
+
+tasks.test {
+    useJUnitPlatform()
+}

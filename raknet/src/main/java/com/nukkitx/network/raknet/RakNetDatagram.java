@@ -58,7 +58,7 @@ public class RakNetDatagram extends AbstractReferenceCounted {
         sequenceIndex = buf.readUnsignedMediumLE();
         int decodedPacketStart = packets.size();
         while (buf.isReadable()) {
-            EncapsulatedPacket packet = new EncapsulatedPacket();
+            EncapsulatedPacket packet = RakNetPacketTrace.inbound();
             if (!packet.decode(buf)) {
                 packets.subList(decodedPacketStart, packets.size()).clear();
                 isValid = false;
