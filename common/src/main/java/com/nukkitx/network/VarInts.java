@@ -11,7 +11,7 @@ public class VarInts {
     }
 
     public static int readInt(ByteBuf buffer) {
-        int n = (int) decode(buffer);
+        int n = (int) decode(buffer, Integer.SIZE);
         return (n >>> 1) ^ -(n & 1);
     }
 
@@ -20,7 +20,7 @@ public class VarInts {
     }
 
     public static int readUnsignedInt(ByteBuf buffer) {
-        return (int) decode(buffer);
+        return (int) decode(buffer, Integer.SIZE);
     }
 
     public static void writeLong(ByteBuf buffer, long value) {
@@ -28,7 +28,7 @@ public class VarInts {
     }
 
     public static long readLong(ByteBuf buffer) {
-        long n = decode(buffer);
+        long n = decode(buffer, Long.SIZE);
         return (n >>> 1) ^ -(n & 1);
     }
 
@@ -37,13 +37,16 @@ public class VarInts {
     }
 
     public static long readUnsignedLong(ByteBuf buffer) {
-        return decode(buffer);
+        return decode(buffer, Long.SIZE);
     }
 
-    private static long decode(ByteBuf buffer) {
+    private static long decode(ByteBuf buffer, int bits) {
         long result = 0;
-        for (int shift = 0; shift < 64; shift += 7) {
+        for (int shift = 0; shift < bits; shift += 7) {
             final byte b = buffer.readByte();
+            if (bits - shift < 7 && ((b & 0x7f) >>> (bits - shift)) != 0) {
+                throw new ArithmeticException("Varint was too large");
+            }
             result |= (b & 0x7FL) << shift;
             if ((b & 0x80) == 0) {
                 return result;
