@@ -3,6 +3,7 @@ package com.nukkitx.network.raknet;
 import com.nukkitx.network.SessionConnection;
 import com.nukkitx.network.raknet.util.*;
 import com.nukkitx.network.util.DisconnectReason;
+import com.nukkitx.network.util.LatencyTrace;
 import com.nukkitx.network.util.Preconditions;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
@@ -404,6 +405,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
                 if (packetId >= ID_USER_PACKET_ENUM) {
                     // Forward to user
                     if (this.listener != null) {
+                        RakNetPacketTrace.received(packet, address, buffer);
                         this.listener.onEncapsulated(packet);
                     }
                 } else {
@@ -953,6 +955,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
             transmissionBandwidth -= size;
             this.outgoingPackets.remove();
             this.queuedBytes -= size;
+            RakNetPacketTrace.dequeued(packet, address, size);
 
             // Send full datagram
             if (!datagram.tryAddPacket(packet, this.adjustedMtu)) {
@@ -1053,6 +1056,12 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
     }
 
     protected void onClose() {
+    }
+
+    /** 仅由所属事件循环调用，复用原有 ACK、重传及拥塞控制顺序。 */
+    public void flush() {
+        Preconditions.checkState(eventLoop.inEventLoop(), "Flush must run on the session event loop");
+        onTick(System.currentTimeMillis());
     }
 
     @Override
@@ -1179,6 +1188,10 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
 
     private EncapsulatedPacket[] createEncapsulated(ByteBuf buffer, RakNetPriority priority, RakNetReliability reliability,
                                                     int orderingChannel) {
+        LatencyTrace.Stamp latencyStamp = LatencyTrace.stamp(buffer);
+        if (latencyStamp != null) {
+            LatencyTrace.record("raknet.enqueue", address.toString(), latencyStamp.key(), "", buffer.readableBytes(), -1);
+        }
         int maxLength = this.adjustedMtu - MAXIMUM_ENCAPSULATED_HEADER_SIZE - RAKNET_DATAGRAM_HEADER_SIZE;
 
         ByteBuf[] buffers;
@@ -1236,7 +1249,7 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
         // Now create the packets.
         EncapsulatedPacket[] packets = new EncapsulatedPacket[buffers.length];
         for (int i = 0, parts = buffers.length; i < parts; i++) {
-            EncapsulatedPacket packet = new EncapsulatedPacket();
+            EncapsulatedPacket packet = RakNetPacketTrace.outbound(latencyStamp);
             packet.buffer = buffers[i];
             packet.orderingChannel = (short) orderingChannel;
             packet.orderingIndex = orderingIndex;
@@ -1312,6 +1325,12 @@ public abstract class RakNetSession implements SessionConnection<ByteBuf> {
             try {
                 Preconditions.checkArgument(buf.writableBytes() < this.adjustedMtu, "Packet length was %s but expected %s", buf.writableBytes(), this.adjustedMtu);
                 datagram.encode(buf);
+                if (LatencyTrace.enabled()) {
+                    String datagramKey = Integer.toString(datagram.sequenceIndex);
+                    for (EncapsulatedPacket packet : datagram.packets) {
+                        RakNetPacketTrace.datagram(packet, address, datagramKey, oldIndex != -1);
+                    }
+                }
                 this.channel.write(new DatagramPacket(buf, this.address));
                 transferred = true;
             } finally {

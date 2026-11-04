@@ -3,6 +3,8 @@ plugins {
 }
 
 dependencies {
+    testImplementation(libs.jupiter.engine)
+    testRuntimeOnly(libs.junit.launcher)
     api(libs.netty.buffer)
     api(libs.netty.epoll)
     api(libs.netty.kqueue)
@@ -14,3 +16,7 @@ dependencies {
 
 group = "com.nukkitx.network"
 description = "common"
+
+tasks.test {
+    useJUnitPlatform()
+}

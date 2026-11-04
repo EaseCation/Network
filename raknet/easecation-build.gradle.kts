@@ -4,6 +4,8 @@ plugins {
 }
 
 dependencies {
+    testImplementation(libs.jupiter.engine)
+    testImplementation(libs.mockito.core)
     api(project(":Network:common"))
     api(libs.netty.handler)
     api(libs.expiringmap)
