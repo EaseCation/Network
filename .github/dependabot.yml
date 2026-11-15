@@ -8,10 +8,10 @@ updates:
       github-actions:
         patterns:
           - "*"
-  - package-ecosystem: "gradle"
-    directory: "/"
-    schedule:
-      interval: "quarterly"
-    open-pull-requests-limit: 20
-    ignore:
-      - dependency-name: "com.google.code.findbugs:jsr305"
+#  - package-ecosystem: "gradle"
+#    directory: "/"
+#    schedule:
+#      interval: "quarterly"
+#    open-pull-requests-limit: 20
+#    ignore:
+#      - dependency-name: "com.google.code.findbugs:jsr305"
